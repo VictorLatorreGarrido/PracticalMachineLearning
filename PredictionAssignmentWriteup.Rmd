@@ -1,0 +1,224 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Victor Latorre Garrido"
+output:
+  html_document:
+    df_print: paged
+---
+## Overview:
+
+This document was generated as requirment on the last assignment of the Practical Machine Learning module in the Data Science Specialization course from the John Hoppkins University. 
+
+## Goal of the project:
+
+The goal of your project is to predict the manner in which some people do their exercise in terms of quality. Being more specific, we are talking about the Human Activity Recognitio (HAR).
+
+We are going to get help from some data given by accelerometers included in some weareable accelerometers. Bearing in mind our goal, we need to go deeper in the data and understand our problem, so go to load the data and do some Exploratory Data Analysis (EDA):
+
+## Data Loading
+
+We have been providad by a training and test dataset for our analysis, which have been downloaded and included inside the data folder in the current environment.
+
+This data, WLE datase is generated from the following paper and is licensed under the Creative Commons license (CC BY-SA). The CC BY-SA license means you can remix, tweak, and build upon this work even for commercial purposes, as long as you credit the authors of the original work and you license your new creations under the identical terms we are licensing to you.
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+
+```{r, }
+initialDataTrain <- read.csv("data/pml-training.csv", header = TRUE )
+initialDataHoldOut <- read.csv("data/pml-testing.csv", header = TRUE)
+```
+
+## EDA analysis
+
+### Library loading
+
+```{r,warning=FALSE}
+library(knitr)
+library(caret)
+library(randomForest)
+source("functions.R")
+```
+
+### Data analysis
+
+Let's evaluate the current size of both datasets:
+```{r}
+numtrainingRow<-dim(initialDataTrain)[1]
+numtrainingCol<-dim(initialDataTrain)[2]
+numholdoutRow<-dim(initialDataHoldOut)[1] 
+numholdoutCol<-dim(initialDataHoldOut)[2]
+
+list(numtrainingRow,numtrainingCol,numholdoutRow,numholdoutCol)
+```
+
+We got 160 variables, including the "classe" variable, the manner, for the predicting propouses. In terms of data distribution, we got 19622 row on the training set and 20 rows on the holdout.
+
+In terms of training/test we would need to split the training in train/test with usual propotions (60/40 or 70/30). We already have redefined the test provided as the hold out.
+
+```{r}
+set.seed(2)
+inTrain  <- createDataPartition(initialDataTrain$classe, p=0.6, list=FALSE)
+
+initialDataTrainSplit <- initialDataTrain[inTrain, ]
+
+initialDataTestSplit  <- initialDataTrain[-inTrain, ]
+dim(initialDataTrainSplit)
+dim(initialDataTestSplit)
+```
+
+We now have:
+
+* 11776 rows in the train
+* 7846 rows in the test
+
+Let's find out the "classe" variable:
+
+```{r}
+summary(initialDataTrainSplit$classe)
+summary(initialDataTestSplit$classe)
+```
+
+From this data we extract 2 key points:
+
+* We got 5 clases, so we got a multiclass classification problem.
+* This is a balanced problem.
+
+In the holdout, we don't have the classe variable, but we have the problem_id, which are just the numeric index of each of the cases we want to predict.
+
+```{r}
+summary(initialDataHoldOut$problem_id)
+initialDataHoldOut$problem_id
+```
+
+This is a variable which we don't want for our prediction propouses.
+
+```{r}
+holdOutData <- subset(initialDataHoldOut, select = -problem_id)
+```
+
+Let's have a look, to what we have in our train data:
+```{r}
+head(initialDataTrainSplit)
+```
+
+First 2 columns, didn't give us any usefull information thinking on what a model need for predict some behaviour for a new user. The next 3 columes are date/time related which didn't have any sense to use for predictions, since time is a continuos variable, which will never repeat on values. So the model is not going to find any correlation with any particular value or group of values (we are ignoring season patterns in terms of affecting the maner in which people do exercise).
+
+```{r}
+trainData <- subset(initialDataTrainSplit, select = -c(1:5))
+testData <- subset(initialDataTestSplit, select = -c(1:5))
+holdOutData <- subset(holdOutData, select = -c(1:5))
+```
+
+Let see what our data looks like now:
+
+```{r}
+head(trainData)
+```
+
+By inspecting the data, we reallize we have some variable with NA values, let's clean the NA values. We have some posible strategies for work with this data:
+
+* Substitue NA value for (mean, median or mode) depending kind of variable.
+* Remove the entire column. (Depending on the proportion of values missing.)
+
+Let's analyze NA over the trainData:
+```{r}
+summary(sapply(trainData, function(x) sum(is.na(x))))
+```
+
+With the distribution shown, we seen like, we are missing same number of registers (11519) in must cases, let's study this case as factors.
+
+```{r}
+summary(as.factor(sapply(trainData, function(x) sum(is.na(x)))))
+```
+
+From this result:
+
+* We got that 88 variables, in which we don't have any NA value.
+* There are 67 variables, in which 11519/11776 data is missing.
+
+We deal with that 67 variables with the second tactic mentioned above, removing the variables, since don't have any sense to input the mean, median or mode for any of this fields (low real information, high artificial generated).
+
+```{r}
+variable <- sapply(trainData, function(x) sum(is.na(x)))
+index <- sapply(variable, function(x) binarizar(x))
+columnsWithoutNA <- names(trainData)[index]
+
+trainDataWithouNA <- subset(trainData, select = columnsWithoutNA)
+testDataWithouNA <- subset(testData, select = columnsWithoutNA)
+
+```
+
+Just check, after all the selections we got what we expect:
+
+```{r}
+dim(trainDataWithouNA)
+dim(testDataWithouNA)
+```
+
+We keep the rows as expected and get the 88 variables without NAs, let's continue with the exploratory analysis.
+
+The following point we should  check from the variables is to avoid the constant or low variance predictors, for that we can use the nearZeroVar function from caret.
+
+```{r}
+nearConstantVariables <- nearZeroVar(trainDataWithouNA,freqCut = 97/3)
+nearConstantVariables
+```
+
+We found 34 variables, with the cutoff for the ratio (97/3) of the most common value to the second most common value.
+
+```{r}
+trainDataClean <- subset(trainDataWithouNA, select = -nearConstantVariables)
+testDataClean <- subset(testDataWithouNA, select = -nearConstantVariables)
+```
+
+Let's finish this EDA and cleaning data process, with a summary of the dimention reduction:
+
+```{r}
+dim(trainDataClean)
+dim(testDataClean)
+```
+
+
+Variables at the beggining: 160
+Variables at the end: 54
+
+## Model building
+
+Next on, is to define which multiclass model/s we want to use for the exercise we are trying to solve.
+
+A classical algorithm for this kind of problems is the Random Forest, let see how it works on this problem.
+
+### Train the RF
+
+With help of the trainControl function of caret, using the repeatedcv resampling method and defining 10 as number of resampling iterations for avoiding the overfitting, RandomForestModel object generated.
+
+```{r}
+set.seed(2)
+trControl <- trainControl(method="repeatedcv", number=10, verboseIter=FALSE)
+
+RandForestModel <- train(classe ~ ., data=trainDataClean, method="rf",
+                          trControl=trControl)
+
+RandForestModel$finalModel
+```
+
+Now we test the prediction of the previous model with the test data we have splitted from the original train.
+```{r}
+predict1 <- predict(RandForestModel, newdata=testDataClean)
+confMat1 <- confusionMatrix(predict1, testDataClean$classe)
+confMat1
+```
+
+99.68 Accuracy didn´t look any bad. It takes time to compute with that amount of resampling iterations, but looks like it pretty much show a great prediction.
+
+I got the idea of trying new models, but it doesn't look necesary. Higher accuracy would be obtained with more sophisticated models, but the ratio between time spent building them and the accuracy increase obtained, will be unwise. 
+
+## Predict the Hold Out
+
+With the RandomForestModle trained, we make our exercise prediction and obtain the following:
+
+```{r}
+predict(RandForestModel, newdata=holdOutData)
+```
+
